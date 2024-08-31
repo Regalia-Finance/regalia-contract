@@ -2,26 +2,38 @@
 // Compatible with OpenZeppelin Contracts ^5.0.0
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20VotesUpgradeable.sol";
 import {PrincipleToken} from "./PrincipleToken.sol";
 
-contract RoyaltyToken is ERC20, ERC20Burnable, Ownable, ERC20Permit, ERC20Votes {
+contract RoyaltyToken is
+    Initializable,
+    ERC20Upgradeable,
+    ERC20BurnableUpgradeable,
+    OwnableUpgradeable,
+    ERC20PermitUpgradeable,
+    ERC20VotesUpgradeable
+{
     // errors
     error RT__NotPrincipleToken();
     error RT__NotImplemented();
 
-    address public immutable pt;
-    uint256 public immutable ptId;
+    address public pt;
+    uint256 public ptId;
 
-    constructor(string memory _name, string memory _symbol, address _pt, uint256 _ptId)
-        ERC20(_name, _symbol)
-        Ownable(msg.sender)
-        ERC20Permit(_name)
-    {
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(string memory _name, string memory _symbol, address _pt, uint256 _ptId) public initializer {
+        __ERC20_init(_name, _symbol);
+        __ERC20Burnable_init();
+        __Ownable_init(msg.sender);
+        __ERC20Permit_init(_name);
         pt = _pt;
         ptId = _ptId;
     }
@@ -64,11 +76,14 @@ contract RoyaltyToken is ERC20, ERC20Burnable, Ownable, ERC20Permit, ERC20Votes 
         return super.transferFrom(from, to, amount);
     }
 
-    function _update(address from, address to, uint256 value) internal override(ERC20, ERC20Votes) {
+    function _update(address from, address to, uint256 value)
+        internal
+        override(ERC20Upgradeable, ERC20VotesUpgradeable)
+    {
         super._update(from, to, value);
     }
 
-    function nonces(address owner) public view override(ERC20Permit, Nonces) returns (uint256) {
+    function nonces(address owner) public view override(ERC20PermitUpgradeable, NoncesUpgradeable) returns (uint256) {
         return super.nonces(owner);
     }
 

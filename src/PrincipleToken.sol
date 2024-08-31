@@ -10,6 +10,7 @@ import {IERC721Metadata} from "@openzeppelin/contracts/token/ERC721/extensions/I
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 contract PrincipleToken is ERC721, ERC721Burnable, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -47,7 +48,9 @@ contract PrincipleToken is ERC721, ERC721Burnable, Ownable, ReentrancyGuard {
 
     uint256 public constant AUCTION_DURATION = 7 days;
     uint8 public constant minBidIncrementPercentage = 10;
+
     uint256 public currentPTId;
+    address public royaltyTokenImplementation;
 
     mapping(uint256 => Auction) public auctions;
     mapping(uint256 => address) public royaltyTokens;
@@ -56,7 +59,9 @@ contract PrincipleToken is ERC721, ERC721Burnable, Ownable, ReentrancyGuard {
     mapping(uint256 => uint256) public totalRoyaltyDistributions;
     mapping(uint256 => mapping(uint256 => mapping(address => bool))) public royaltyClaimed;
 
-    constructor(address initialOwner) ERC721("MyToken", "MTK") Ownable(initialOwner) {}
+    constructor(address _royaltyTokenImplementation) ERC721("MyToken", "MTK") Ownable(msg.sender) {
+        royaltyTokenImplementation = _royaltyTokenImplementation;
+    }
 
     function depositIP(
         address ip,
@@ -73,9 +78,14 @@ contract PrincipleToken is ERC721, ERC721Burnable, Ownable, ReentrancyGuard {
         IERC721Metadata(ip).transferFrom(msg.sender, address(this), tokenId);
 
         uint256 newPTId = currentPTId++;
-        address rt =
-            address(new RoyaltyToken(IERC721Metadata(ip).name(), IERC721Metadata(ip).symbol(), address(this), newPTId));
+
+        // deploy royalty token
+        bytes32 salt = bytes32(keccak256(abi.encodePacked(newPTId)));
+        address rt = Clones.cloneDeterministic(royaltyTokenImplementation, salt);
+        RoyaltyToken(rt).initialize(IERC721Metadata(ip).name(), IERC721Metadata(ip).symbol(), address(this), newPTId);
+
         royaltyTokens[newPTId] = rt;
+
         IPs[newPTId] = IP(ip, tokenId, maturity, promisedRoyaltyToken, promisedRoyaltyAmount);
 
         _safeMint(receiver, newPTId);
