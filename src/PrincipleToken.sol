@@ -192,12 +192,12 @@ contract PrincipleToken is ERC721, ERC721Burnable, Ownable, ReentrancyGuard {
 
         IERC20(principles[id].promisedToken).safeTransferFrom(msg.sender, address(this), amount);
 
+        auction.amount = amount;
+        auction.bidder = msg.sender;
+
         if (lastBidder != address(0)) {
             IERC20(principles[id].promisedToken).safeTransfer(lastBidder, auction.amount);
         }
-
-        auction.amount = amount;
-        auction.bidder = msg.sender;
     }
 
     function getMaturity(uint256 id) public view returns (uint256) {
@@ -210,11 +210,12 @@ contract PrincipleToken is ERC721, ERC721Burnable, Ownable, ReentrancyGuard {
         if (presale.totalSold + amount > presale.totalAmount) revert PT__PresaleNotEnough();
 
         uint256 sales = amount.mulDiv(presale.price, 1e18); // 1e18 is RT decimals
-        IERC20(principles[id].promisedToken).safeTransferFrom(msg.sender, address(this), sales);
-        IERC20(principles[id].rt).safeTransfer(msg.sender, amount);
 
         presales[id].totalSold += amount;
         presales[id].totalSales += sales;
+
+        IERC20(principles[id].promisedToken).safeTransferFrom(msg.sender, address(this), sales);
+        IERC20(principles[id].rt).safeTransfer(msg.sender, amount);
     }
 
     function withdrawPresaleRevenue(uint256 id) public nonReentrant {
@@ -225,8 +226,8 @@ contract PrincipleToken is ERC721, ERC721Burnable, Ownable, ReentrancyGuard {
         uint256 revenue = presale.totalSales - presale.totalWithdrawn;
         if (revenue == 0) revert PT__NoWithdrawn();
 
-        IERC20(principles[id].promisedToken).safeTransfer(ownerOf(id), revenue);
         presales[id].totalWithdrawn += revenue;
+        IERC20(principles[id].promisedToken).safeTransfer(ownerOf(id), revenue);
     }
 
     function withdrawUnsoldPresale(uint256 id) public nonReentrant {
@@ -239,18 +240,19 @@ contract PrincipleToken is ERC721, ERC721Burnable, Ownable, ReentrancyGuard {
         uint256 unsoldAmount = presale.totalAmount - presale.totalSold;
         if (unsoldAmount == 0) revert PT__PresaleSoldOut();
 
-        IERC20(principles[id].rt).safeTransfer(ownerOf(id), unsoldAmount);
-
         presales[0].totalSold += unsoldAmount;
+
+        IERC20(principles[id].rt).safeTransfer(ownerOf(id), unsoldAmount);
     }
 
     function depositRoyalty(uint256 id, uint256 amount) public nonReentrant returns (uint256) {
         if (msg.sender != ownerOf(id)) revert PT__NotOwner();
         if (block.timestamp >= principles[id].maturity) revert PT__AlreadyExpired();
 
-        IERC20(principles[id].promisedToken).safeTransferFrom(msg.sender, address(this), amount);
         totalRoyaltyDistributions[id] += amount;
         royaltyDistributions[id][block.number] += amount;
+
+        IERC20(principles[id].promisedToken).safeTransferFrom(msg.sender, address(this), amount);
 
         return block.number;
     }
@@ -263,9 +265,8 @@ contract PrincipleToken is ERC721, ERC721Burnable, Ownable, ReentrancyGuard {
         uint256 totalRoyaltyAmount = royaltyDistributions[id][blockNumber];
 
         uint256 amount = rtOwned.mulDiv(totalRoyaltyAmount, totalSupply);
-        IERC20(principles[id].promisedToken).safeTransfer(receiver, amount);
-
         royaltyClaimed[id][blockNumber][msg.sender] = true;
+        IERC20(principles[id].promisedToken).safeTransfer(receiver, amount);
     }
 
     function _createAuction(uint256 id) internal {

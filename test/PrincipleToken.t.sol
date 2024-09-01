@@ -172,18 +172,19 @@ contract PrincipleTokenTest is Test {
 
     function testClaimRoyalty() public {
         vm.startPrank(receiver);
-        vm.roll(block.number + 1);
         mockERC20.mint(receiver, 10_000e6);
         mockERC20.approve(address(principleToken), 10_000e6);
 
-        uint256 blockNumber = block.number;
         principleToken.depositRoyalty(0, 10_000e6);
 
-        vm.roll(blockNumber + 1);
+        vm.roll(block.number + 1);
         (,,, address _promisedToken,, address _rt) = principleToken.principles(0);
-        // console.log(IERC20(_rt).balanceOf(receiver));
-        principleToken.claimRoyalty(0, blockNumber, address(0x3));
-        assertEq(mockERC20.balanceOf(address(0x3)), 500);
+        principleToken.claimRoyalty(0, block.number - 1, address(0x3));
+        assertEq(mockERC20.balanceOf(address(0x3)), (10_000e6 * 10) / 100);
+
+        // PT__AlreadyClaimed()
+        vm.expectRevert(abi.encodeWithSignature("PT__AlreadyClaimed()"));
+        principleToken.claimRoyalty(0, block.number - 1, address(0x3));
         vm.stopPrank();
     }
 

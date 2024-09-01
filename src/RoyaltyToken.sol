@@ -81,6 +81,11 @@ contract RoyaltyToken is
         internal
         override(ERC20Upgradeable, ERC20VotesUpgradeable)
     {
+        // force to self delegate
+        // source: https://forum.openzeppelin.com/t/self-delegation-in-erc20votes/17501/17
+        if (to != address(0) && numCheckpoints(to) == 0 && delegates(to) == address(0)) {
+            _delegate(to, to);
+        }
         super._update(from, to, value);
     }
 
