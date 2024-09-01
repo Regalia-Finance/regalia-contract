@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL 1.1
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
@@ -27,152 +27,262 @@ contract PrincipleToken is ERC721, ERC721Burnable, Ownable, ReentrancyGuard {
     error PT__AuctionEnded();
     error PT__NotEnoughBid();
     error PT__AuctionNotExist();
+    error PT__AuctionExist();
+    error PT__LiquidationPenaltyExceedMax();
+    error PT__OwnerAllocationExceeded();
+    error PT__PresaleEnded();
+    error PT__PresaleNotEnough();
+    error PT__PresaleSoldOut();
+    error PT__PresaleNotYetEnded();
+    error PT__NoWithdrawn();
+    error PT__InvalidPresaleEndTime();
+    error PT__LessThanMinAmount();
 
-    struct IP {
-        address ip;
+    struct PT {
+        address ip; // IP is erc721
         uint256 tokenId;
         uint256 maturity;
-        address promisedRoyaltyToken;
-        uint256 promisedRoyaltyAmount;
+        address promisedToken;
+        uint256 promisedRoyalty;
+        address rt;
+    }
+
+    struct PTParams {
+        address ip; // IP is erc721
+        uint256 tokenId;
+        uint256 maturity;
+        address promisedToken;
+        uint256 promisedRoyalty;
     }
 
     struct Auction {
-        address nft;
+        address ip; // IP is erc721
         uint256 tokenId;
         uint256 amount;
+        uint256 minAmount;
         uint256 startTime;
         uint256 endTime;
         address bidder;
         bool settled;
     }
 
-    uint256 public constant AUCTION_DURATION = 7 days;
-    uint8 public constant minBidIncrementPercentage = 10;
+    struct Presale {
+        uint256 price;
+        uint256 endTime;
+        uint256 totalAmount;
+        uint256 totalSold;
+        uint256 totalSales;
+        uint256 totalWithdrawn;
+    }
 
-    uint256 public currentPTId;
-    address public royaltyTokenImplementation;
+    uint256 public constant AUCTION_DURATION = 7 days;
+
+    uint8 public constant MIN_BID_INCREMENT_PERCENTAGE = 1;
+
+    uint256 public currentId;
+    address public rtImplementation;
+    uint256 public liquidationPenalty;
 
     mapping(uint256 => Auction) public auctions;
-    mapping(uint256 => address) public royaltyTokens;
-    mapping(uint256 => IP) public IPs;
+    mapping(uint256 => PT) public principles;
     mapping(uint256 => mapping(uint256 => uint256)) public royaltyDistributions;
     mapping(uint256 => uint256) public totalRoyaltyDistributions;
     mapping(uint256 => mapping(uint256 => mapping(address => bool))) public royaltyClaimed;
+    mapping(uint256 => Presale) public presales;
 
-    constructor(address _royaltyTokenImplementation) ERC721("MyToken", "MTK") Ownable(msg.sender) {
-        royaltyTokenImplementation = _royaltyTokenImplementation;
+    constructor(address _rtImplementation, uint256 _liquidationPenalty) ERC721("MyToken", "MTK") Ownable(msg.sender) {
+        rtImplementation = _rtImplementation;
+
+        if (_liquidationPenalty > 100) revert PT__LiquidationPenaltyExceedMax();
+        liquidationPenalty = _liquidationPenalty;
     }
 
     function depositIP(
-        address ip,
+        PTParams memory pt,
+        Presale memory presale,
         address receiver,
-        uint256 tokenId,
-        uint256 maturity,
         uint256 rtAmount,
-        address promisedRoyaltyToken,
-        uint256 promisedRoyaltyAmount
+        uint256 ownerAllocation
     ) public nonReentrant {
-        if (IERC721Metadata(ip).ownerOf(tokenId) != msg.sender) revert PT__NotOwner();
-        if (maturity <= block.timestamp) revert PT__InvalidMaturity();
+        if (IERC721Metadata(pt.ip).ownerOf(pt.tokenId) != msg.sender) revert PT__NotOwner();
+        if (pt.maturity <= block.timestamp) revert PT__InvalidMaturity();
+        if (ownerAllocation > rtAmount) revert PT__OwnerAllocationExceeded();
+        if (presale.endTime >= pt.maturity) revert PT__InvalidPresaleEndTime();
 
-        IERC721Metadata(ip).transferFrom(msg.sender, address(this), tokenId);
+        IERC721Metadata(pt.ip).transferFrom(msg.sender, address(this), pt.tokenId);
 
-        uint256 newPTId = currentPTId++;
+        uint256 newId = currentId++;
 
-        // deploy royalty token
-        bytes32 salt = bytes32(keccak256(abi.encodePacked(newPTId)));
-        address rt = Clones.cloneDeterministic(royaltyTokenImplementation, salt);
-        RoyaltyToken(rt).initialize(IERC721Metadata(ip).name(), IERC721Metadata(ip).symbol(), address(this), newPTId);
+        // Deploy royalty token
+        bytes32 salt = keccak256(abi.encodePacked(newId));
+        address rt = Clones.cloneDeterministic(rtImplementation, salt);
+        RoyaltyToken(rt).initialize(
+            IERC721Metadata(pt.ip).name(), IERC721Metadata(pt.ip).symbol(), address(this), newId
+        );
 
-        royaltyTokens[newPTId] = rt;
+        uint256 presaleAllocation = rtAmount - ownerAllocation;
+        principles[newId] = PT(pt.ip, pt.tokenId, pt.maturity, pt.promisedToken, pt.promisedRoyalty, rt);
+        presales[newId] = Presale(presale.price, presale.endTime, presaleAllocation, 0, 0, 0);
 
-        IPs[newPTId] = IP(ip, tokenId, maturity, promisedRoyaltyToken, promisedRoyaltyAmount);
-
-        _safeMint(receiver, newPTId);
-        RoyaltyToken(rt).mint(receiver, rtAmount);
+        _safeMint(receiver, newId);
+        // Mint owner's share of RT
+        RoyaltyToken(rt).mint(receiver, ownerAllocation);
+        // Mint the rest of RT to the presale contract
+        RoyaltyToken(rt).mint(address(this), presaleAllocation);
     }
 
-    function redeemIP(uint256 ptId, address receiver) public nonReentrant {
-        if (msg.sender != ownerOf(ptId)) revert PT__NotOwner();
-        IP memory ip = IPs[ptId];
-        if (block.timestamp < ip.maturity) revert PT__NotYetExpired();
-        if (ip.promisedRoyaltyAmount < totalRoyaltyDistributions[ptId]) revert PT__LessThanPromised();
+    function redeemPT(uint256 id, address receiver) public nonReentrant {
+        if (msg.sender != ownerOf(id)) revert PT__NotOwner();
+        PT memory pt = principles[id];
+        if (block.timestamp < pt.maturity) revert PT__NotYetExpired();
+        if (totalRoyaltyDistributions[id] < pt.promisedRoyalty) revert PT__LessThanPromised();
 
-        IERC721Metadata(ip.ip).transferFrom(address(this), receiver, ip.tokenId);
-        _burn(ptId);
+        IERC721Metadata(pt.ip).safeTransferFrom(address(this), receiver, pt.tokenId);
+        _burn(id);
     }
 
-    function createAuction(uint256 ptId) public nonReentrant {
-        IP memory ip = IPs[ptId];
-        if (block.timestamp < ip.maturity) revert PT__NotYetExpired();
-        if (ip.promisedRoyaltyAmount > totalRoyaltyDistributions[ptId]) revert PT__MoreThanPromised();
-
-        auctions[ptId] = Auction({
-            nft: ip.ip,
-            tokenId: ip.tokenId,
-            amount: 0,
-            startTime: block.timestamp,
-            endTime: block.timestamp + AUCTION_DURATION,
-            bidder: address(0),
-            settled: false
-        });
+    function createAuction(uint256 id) public nonReentrant {
+        _createAuction(id);
     }
 
-    function settleAuction(uint256 ptId) public nonReentrant {
-        Auction storage auction = auctions[ptId];
+    function settleAuction(uint256 id) public nonReentrant {
+        Auction storage auction = auctions[id];
 
-        if (auction.settled) revert PT__AlreadySettled();
         if (auction.startTime == 0) revert PT__AuctionNotExist();
         if (auction.endTime > block.timestamp) revert PT__AuctionEnded();
+        if (auction.settled) revert PT__AlreadySettled();
 
         auction.settled = true;
 
         if (auction.bidder != address(0)) {
-            IERC721Metadata(auction.nft).transferFrom(address(this), auction.bidder, auction.tokenId);
+            IERC721Metadata(auction.ip).safeTransferFrom(address(this), auction.bidder, auction.tokenId);
+
+            // TODO: penalty ?
+            // uint256 liquidationPenaltyAmount = (auction.amount * liquidationPenalty) / 100;
+            // uint256 auctionSurplus = auction.amount - principles[id].promisedRoyalty - liquidationPenaltyAmount;
+            // if (auctionSurplus > 0) {
+            //     IERC20(principles[id].promisedToken).safeTransfer(ownerOf(id), auctionSurplus);
+            // }
+
+            // Distribute auction to RT holders
+            royaltyDistributions[id][block.number] += auction.amount; //- auctionSurplus;
+                // royaltyDistributions[id][block.number] += auction.amount - auctionSurplus;
+        } else {
+            // Delete auction
+            delete auctions[id];
+
+            // start new auction
+            _createAuction(id);
         }
 
-        _burn(ptId);
+        _burn(id);
     }
 
-    function bid(uint256 ptId, uint256 amount) external nonReentrant {
-        Auction storage auction = auctions[ptId];
+    function bid(uint256 id, uint256 amount) external nonReentrant {
+        Auction storage auction = auctions[id];
 
-        if (auction.nft == address(0)) revert PT__AuctionNotExist();
+        if (auction.startTime == 0) revert PT__AuctionNotExist();
+        if (amount < auction.minAmount) revert PT__LessThanMinAmount();
         if (block.timestamp > auction.endTime) revert PT__AuctionEnded();
-        if (amount < auction.amount + ((auction.amount * minBidIncrementPercentage) / 100)) revert PT__NotEnoughBid();
+        if (amount < auction.amount + ((auction.amount * MIN_BID_INCREMENT_PERCENTAGE) / 100)) {
+            revert PT__NotEnoughBid();
+        }
 
         address lastBidder = auction.bidder;
+
+        IERC20(principles[id].promisedToken).safeTransferFrom(msg.sender, address(this), amount);
+
         if (lastBidder != address(0)) {
-            IERC20(IPs[ptId].promisedRoyaltyToken).safeTransfer(lastBidder, auction.amount);
+            IERC20(principles[id].promisedToken).safeTransfer(lastBidder, auction.amount);
         }
 
         auction.amount = amount;
         auction.bidder = msg.sender;
     }
 
-    function getMaturity(uint256 ptId) public view returns (uint256) {
-        return IPs[ptId].maturity;
+    function getMaturity(uint256 id) public view returns (uint256) {
+        return principles[id].maturity;
     }
 
-    function claimRoyalty(uint256 ptId, uint256 blockNumber, address receiver) public nonReentrant {
-        if (royaltyClaimed[ptId][blockNumber][msg.sender]) revert PT__AlreadyClaimed();
+    function buyPresale(uint256 id, uint256 amount) public nonReentrant {
+        Presale memory presale = presales[id];
+        if (block.timestamp > presale.endTime) revert PT__PresaleEnded();
+        if (presale.totalSold + amount > presale.totalAmount) revert PT__PresaleNotEnough();
 
-        uint256 rtOwned = RoyaltyToken(royaltyTokens[ptId]).getPastVotes(msg.sender, blockNumber);
-        uint256 totalSupply = RoyaltyToken(royaltyTokens[ptId]).getPastTotalSupply(blockNumber);
-        uint256 amount = royaltyDistributions[ptId][blockNumber];
+        uint256 sales = amount.mulDiv(presale.price, 1e18); // 1e18 is RT decimals
+        IERC20(principles[id].promisedToken).safeTransferFrom(msg.sender, address(this), sales);
+        IERC20(principles[id].rt).safeTransfer(msg.sender, amount);
 
-        uint256 royaltyAmount = rtOwned.mulDiv(amount, totalSupply);
-        IERC20(IPs[ptId].promisedRoyaltyToken).safeTransfer(receiver, royaltyAmount);
-
-        royaltyClaimed[ptId][blockNumber][msg.sender] = true;
+        presales[id].totalSold += amount;
+        presales[id].totalSales += sales;
     }
 
-    function depositRoyalty(uint256 ptId, uint256 amount) public nonReentrant {
-        if (msg.sender != ownerOf(ptId)) revert PT__NotOwner();
-        if (block.timestamp >= IPs[ptId].maturity) revert PT__AlreadyExpired();
+    function withdrawPresaleRevenue(uint256 id) public nonReentrant {
+        PT memory pt = principles[id];
+        if (ownerOf(id) != msg.sender) revert PT__NotOwner();
 
-        IERC20(IPs[ptId].promisedRoyaltyToken).safeTransferFrom(msg.sender, address(this), amount);
-        totalRoyaltyDistributions[ptId] += amount;
-        royaltyDistributions[ptId][block.number] += amount;
+        Presale memory presale = presales[id];
+        uint256 revenue = presale.totalSales - presale.totalWithdrawn;
+        if (revenue == 0) revert PT__NoWithdrawn();
+
+        IERC20(principles[id].promisedToken).safeTransfer(ownerOf(id), revenue);
+        presales[id].totalWithdrawn += revenue;
+    }
+
+    function withdrawUnsoldPresale(uint256 id) public nonReentrant {
+        PT memory pt = principles[id];
+        if (ownerOf(id) != msg.sender) revert PT__NotOwner();
+
+        Presale memory presale = presales[id];
+        if (block.timestamp < presale.endTime) revert PT__PresaleNotYetEnded();
+
+        uint256 unsoldAmount = presale.totalAmount - presale.totalSold;
+        if (unsoldAmount == 0) revert PT__PresaleSoldOut();
+
+        IERC20(principles[id].rt).safeTransfer(ownerOf(id), unsoldAmount);
+
+        presales[0].totalSold += unsoldAmount;
+    }
+
+    function depositRoyalty(uint256 id, uint256 amount) public nonReentrant returns (uint256) {
+        if (msg.sender != ownerOf(id)) revert PT__NotOwner();
+        if (block.timestamp >= principles[id].maturity) revert PT__AlreadyExpired();
+
+        IERC20(principles[id].promisedToken).safeTransferFrom(msg.sender, address(this), amount);
+        totalRoyaltyDistributions[id] += amount;
+        royaltyDistributions[id][block.number] += amount;
+
+        return block.number;
+    }
+
+    function claimRoyalty(uint256 id, uint256 blockNumber, address receiver) public nonReentrant {
+        if (royaltyClaimed[id][blockNumber][msg.sender]) revert PT__AlreadyClaimed();
+
+        uint256 rtOwned = RoyaltyToken(principles[id].rt).getPastBalance(msg.sender, blockNumber);
+        uint256 totalSupply = RoyaltyToken(principles[id].rt).getPastTotalSupply(blockNumber);
+        uint256 totalRoyaltyAmount = royaltyDistributions[id][blockNumber];
+
+        uint256 amount = rtOwned.mulDiv(totalRoyaltyAmount, totalSupply);
+        IERC20(principles[id].promisedToken).safeTransfer(receiver, amount);
+
+        royaltyClaimed[id][blockNumber][msg.sender] = true;
+    }
+
+    function _createAuction(uint256 id) internal {
+        PT memory pt = principles[id];
+        if (block.timestamp < pt.maturity) revert PT__NotYetExpired();
+        if (pt.promisedRoyalty < totalRoyaltyDistributions[id]) revert PT__MoreThanPromised();
+        if (auctions[id].startTime != 0) revert PT__AuctionExist();
+
+        auctions[id] = Auction({
+            ip: pt.ip,
+            tokenId: pt.tokenId,
+            amount: 0,
+            minAmount: pt.promisedRoyalty,
+            startTime: block.timestamp,
+            endTime: block.timestamp + AUCTION_DURATION,
+            bidder: address(0),
+            settled: false
+        });
     }
 }

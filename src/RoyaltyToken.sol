@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL 1.1
 // Compatible with OpenZeppelin Contracts ^5.0.0
 pragma solidity ^0.8.20;
 
@@ -33,6 +33,7 @@ contract RoyaltyToken is
         __ERC20_init(_name, _symbol);
         __ERC20Burnable_init();
         __Ownable_init(msg.sender);
+        __ERC20Votes_init();
         __ERC20Permit_init(_name);
         pt = _pt;
         ptId = _ptId;
@@ -85,6 +86,14 @@ contract RoyaltyToken is
 
     function nonces(address owner) public view override(ERC20PermitUpgradeable, NoncesUpgradeable) returns (uint256) {
         return super.nonces(owner);
+    }
+
+    function getPastBalance(address account, uint256 blockNumber) public view returns (uint256) {
+        return super.getPastVotes(account, blockNumber);
+    }
+
+    function getPastVotes(address account, uint256 blockNumber) public view override returns (uint256) {
+        revert RT__NotImplemented();
     }
 
     function delegate(address delegatee) public virtual override {
